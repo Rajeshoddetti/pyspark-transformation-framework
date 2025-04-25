@@ -1,0 +1,78 @@
+. Setup the Transformation & Action Dictionaries
+from pyspark.sql import functions as F
+
+# --- TRANSFORMATIONS ---
+
+TRANSFORMATIONS = {
+    "select": lambda df, params: df.select(*params["columns"]),
+    "filter": lambda df, params: df.filter(params["condition"]),
+    "withColumn": lambda df, params: df.withColumn(params["name"], eval(params["expression"])),
+    "drop": lambda df, params: df.drop(*params["columns"]),
+    "alias": lambda df, params: df.alias(params["alias"]),
+    "groupBy": lambda df, params: df.groupBy(*params["group_by"]).agg(*[getattr(F, agg["func"])(agg["col"]).alias(agg["alias"]) for agg in params["aggregations"]]),
+    "join": lambda df, params: df.join(params["other_df"], on=params["on"], how=params.get("how", "inner")),
+    "orderBy": lambda df, params: df.orderBy(*params["columns"]),
+    "cache": lambda df, _: df.cache(),
+    "repartition": lambda df, params: df.repartition(params["num_partitions"]),
+    # add more as needed
+}
+Define Action Dictionary
+ACTIONS = {
+    "show": lambda df, params: df.show(params.get("n", 20), truncate=params.get("truncate", True)),
+    "collect": lambda df, _: df.collect(),
+    "write": lambda df, params: df.write.mode(params.get("mode", "overwrite")).format(params.get("format", "parquet")).save(params["path"]),
+    "count": lambda df, _: df.count(),
+    # add more actions like `write.jdbc`, `write.json`, etc.
+}
+Transformation Chain Executor
+def apply_transformations(df, transformations, custom_funcs={}):
+    for step in transformations:
+        op = step["operation"]
+        params = step.get("params", {})
+        if op in TRANSFORMATIONS:
+            df = TRANSFORMATIONS[op](df, params)
+        elif op in custom_funcs:
+            df = custom_funcs[op](df, params)
+        else:
+            raise ValueError(f"Unknown transformation operation: {op}")
+    return df
+ Action Executor
+def execute_action(df, action_config, custom_actions={}):
+    action = action_config["action"]
+    params = action_config.get("params", {})
+    if action in ACTIONS:
+        return ACTIONS[action](df, params)
+    elif action in custom_actions:
+        return custom_actions[action](df, params)
+    else:
+        raise ValueError(f"Unknown action: {action}")
+Custom Function Registration (Optional)
+def transform_uppercase_column(df, params):
+    col_name = params["column"]
+    return df.withColumn(col_name, F.upper(F.col(col_name)))
+
+CUSTOM_TRANSFORMS = {
+    "uppercase_column": transform_uppercase_column
+}
+Example Configuration (JSON/Dict)
+TRANSFORMATION_CONFIG = [
+    {"operation": "select", "params": {"columns": ["name", "age", "country"]}},
+    {"operation": "filter", "params": {"condition": "age > 30"}},
+    {"operation": "uppercase_column", "params": {"column": "country"}},
+    {"operation": "withColumn", "params": {"name": "age_group", "expression": "F.when(F.col('age') > 50, 'Senior').otherwise('Adult')"}}
+]
+
+ACTION_CONFIG = {
+    "action": "show",
+    "params": {"n": 10, "truncate": False}
+}
+Putting It All Together
+def run_pipeline(df, transformation_config, action_config, custom_transforms={}, custom_actions={}):
+    try:
+        transformed_df = apply_transformations(df, transformation_config, custom_transforms)
+        result = execute_action(transformed_df, action_config, custom_actions)
+        return result
+    except Exception as e:
+        import logging
+        logging.exception("Pipeline execution failed")
+        raise
